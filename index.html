@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hammerbbcrack</title>
+  <style>
+    :root { --bg:#fff; --fg:#333; --accent:#3498db; }
+    [data-theme="dark"]{--bg:#121212;--fg:#ddd;--accent:#4e9af1;}
+    body{margin:0;font-family:Arial,sans-serif;background:var(--bg);color:var(--fg);}
+    #toolbar{display:flex;flex-wrap:wrap;gap:.5rem;padding:1rem;background:var(--bg);}
+    #toolbar input,button{padding:.5rem;font-size:1rem;}
+    #progress, #sec-panel{position:fixed;left:0;width:100%;z-index:999;}
+    #progress{top:0;height:4px;background:#eee;}
+    #bar{height:100%;background:var(--accent);transition:width .2s;}
+    #sec-panel{bottom:0;padding:.5rem;background:rgba(0,0,0,.7);color:#fff;font-size:.8rem;display:flex;gap:1rem;}
+    #content{padding:1rem;}
+    img{max-width:100%;margin:.5rem 0;}
+    .thumbnail{max-height:200px;cursor:pointer;}
+    #darkToggle{position:fixed;bottom:1rem;right:1rem;padding:.5rem;background:var(--accent);color:#fff;border:none;border-radius:4px;}
+    #summary{padding:1rem;border:1px solid var(--accent);margin:1rem 0;background:rgba(52,152,219,0.1);}
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <input id="urlInput" type="url" placeholder="https://example.com">
+    <input id="selectorInput" type="text" placeholder="CSSセレクター (例:.main)">
+    <button id="goButton">Go</button>
+    <button id="readerButton">📰 記事モード</button>
+    <button id="summarizeButton">✂ 要約</button>
+    <button id="pdfButton">📄 PDF保存</button>
+  </div>
+  <div id="progress"><div id="bar"></div></div>
+  <div id="content">ここにページが表示されます…</div>
+  <div id="summary" hidden></div>
+  <div id="sec-panel">Blocked: <span id="blockCount">0</span> items</div>
+  <button id="darkToggle">Toggle Dark</button>
+
+  <!-- 外部ライブラリ -->
+  <script src="https://unpkg.com/idb-keyval@6/dist/idb-keyval.iife.js"></script>
+  <script src="https://unpkg.com/@mozilla/readability@0.4.4/Readability.js"></script>
+  <script>
+  (async()=>{
+    const CORS_PROXY='https://api.allorigins.win/raw?url=';
+    const TTL=5*60e3, blacklistDomains=['ads.example','tracker.site'];
+    const easyList = [/googlesyndication\.com/,/doubleclick\.net/];
+    let blockCount=0;
+
+    // UI Elements
+    const bar=document.getElementById('bar');
+    const content=document.getElementById('content');
+    const summaryDiv=document.getElementById('summary');
+    const blockCntSpan=document.getElementById('blockCount');
+    const root=document.documentElement;
+
+    // ダークモード
+    function setTheme(t){ root.setAttribute('data-theme',t);localStorage.theme=t; }
+    document.getElementById('darkToggle').onclick=()=>setTheme(root.getAttribute('data-theme')==='dark'?'light':'dark');
+    setTheme(localStorage.theme|| (matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'));
+
+    // HTTP+Streamキャッシュ + 広告フィルタ
+    async function fetchCache(url){
+      const key='uc_'+url;
+      const e=await idbKeyval.get(key);
+      if(e && Date.now()-e.ts<TTL) return e.html;
+      const host=new URL(url).hostname;
+      if(blacklistDomains.includes(host)) throw 'Domain blocked';
+      const res=await fetch(CORS_PROXY+encodeURIComponent(url));
+      const reader=res.body.getReader(), len=+res.headers.get('Content-Length')||0;
+      let received=0, chunks=[];
+      while(true){
+        const {done,value}=await reader.read();
+        if(done) break;
+        // 広告スクリプト／iframeフィルタ
+        const txt=new TextDecoder().decode(value);
+        if(easyList.some(rx=>rx.test(txt))){ blockCount++; blockCntSpan.textContent=blockCount; continue; }
+        chunks.push(value);
+        received+=value.length;
+        if(len) bar.style.width=(received/len*100)+'%';
+      }
+      const html=new TextDecoder('utf-8').decode(new Uint8Array(chunks.flat()));
+      await idbKeyval.set(key,{ts:Date.now(),html});
+      bar.style.width='0%';
+      return html;
+    }
+
+    // ページ読込本体
+    async function loadPage(u, useReadability=false){
+      document.title='Loading…'; content.innerHTML=''; summaryDiv.hidden=true;
+      try{
+        let html=await fetchCache(u);
+        const parser=new DOMParser(), doc=parser.parseFromString(html,'text/html');
+        // Readability
+        if(useReadability){
+          const article=new Readability(doc).parse();
+          if(article){ content.innerHTML=article.content; document.title=article.title; }
+        } else {
+          // 通常パイプライン
+          // base, 絶対化, meta/script/CSP排除, CSS inline
+          let base=doc.querySelector('base')||doc.head.prepend(doc.createElement('base'))&&doc.head.firstChild;
+          base.setAttribute('href',u);
+          doc.querySelectorAll('[src],[href]').forEach(el=>{
+            const attr=el.hasAttribute('src')?'src':'href',v=el.getAttribute(attr);
+            if(v&&!/^(https?:|\/\/|data:)/.test(v)) el.setAttribute(attr,new URL(v,u).href);
+          });
+          doc.querySelectorAll('meta[http-equiv],script').forEach(e=>e.remove());
+          await Promise.all([...doc.querySelectorAll('link[rel=stylesheet]')].map(async l=>{
+            try{const txt=await fetch(CORS_PROXY+encodeURIComponent(l.href)).then(r=>r.text());
+                 const s=document.createElement('style');s.textContent=txt; l.replaceWith(s);}
+            catch{} }));
+          // Lazy+動画+フォーム
+          doc.querySelectorAll('img').forEach(img=>{img.loading='lazy';img.classList.add('thumbnail');img.onclick=()=>img.classList.toggle('thumbnail');});
+          doc.querySelectorAll('video').forEach(v=>v.setAttribute('controls',''));
+          doc.querySelectorAll('form').forEach(f=>{
+            const abs=new URL(f.action||u,u).href; f.method='GET'; f.action='/';
+            const i=document.createElement('input');i.type='hidden';i.name='url';i.value=abs;f.appendChild(i);
+          });
+          // セレクター抽出
+          const sel=document.getElementById('selectorInput').value.trim();
+          const frag=sel?(doc.querySelector(sel)||document.createTextNode('該当なし')).cloneNode(true)
+                        :doc.body.cloneNode(true);
+          content.appendChild(frag);
+        }
+      }catch(e){
+        content.textContent='Error: '+e; document.title='Error';
+      }finally{ bar.style.width='0%'; }
+    }
+
+    // ページ要約
+    function summarize(){
+      const txt=content.textContent||'';
+      // 超簡易サマリ：文で分割して先頭3文
+      const sents=txt.match(/[^。！？]+[。！？]/g)||[];
+      const top3=sents.slice(0,3).join('');
+      summaryDiv.innerHTML='<strong>要約:</strong><p>'+top3+'</p>';
+      summaryDiv.hidden=false;
+    }
+
+    // PDF出力
+    function exportPDF(){
+      window.print();
+    }
+
+    // キーバインド
+    document.addEventListener('keydown',e=>{
+      if(e.target!==document.body) return;
+      switch(e.key){
+        case 'j': window.scrollBy(0,100); break;
+        case 'k': window.scrollBy(0,-100); break;
+        case 's': summarize(); break;
+        case 'p': exportPDF(); break;
+        case 'r': loadPage(document.getElementById('urlInput').value,true); break;
+      }
+    });
+
+    // ボタン連携
+    document.getElementById('goButton').onclick=()=>loadPage(urlInput.value,false);
+    document.getElementById('readerButton').onclick=()=>loadPage(urlInput.value,true);
+    document.getElementById('summarizeButton').onclick=summarize;
+    document.getElementById('pdfButton').onclick=exportPDF;
+    ['urlInput','selectorInput'].forEach(id=>document.getElementById(id).addEventListener('keyup',e=>{ if(e.key==='Enter') loadPage(urlInput.value,false); }));
+
+    // ServiceWorker（オフライン保持用）
+    const swCode=`
+      const C='cache-v2';
+      self.addEventListener('install',e=>e.waitUntil(self.skipWaiting()));
+      self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));
+      self.addEventListener('fetch',e=>{
+        e.respondWith(caches.open(C).then(c=>c.match(e.request).then(r=>r||fetch(e.request).then(f=>{c.put(e.request,f.clone());return f}))));
+      });
+    `;
+    const swBlob=new Blob([swCode],{type:'text/javascript'});
+    navigator.serviceWorker.register(URL.createObjectURL(swBlob));
+
+    // プリコネクト
+    document.head.insertAdjacentHTML('beforeend',`
+      <link rel="preconnect" href="${location.origin}">
+      <link rel="dns-prefetch" href="${location.origin}">
+    `);
+
+    // 共有URL(state)復元は省略（前バージョンと同様に実装可）
+  })();
+  </script>
+</body>
+</html>
