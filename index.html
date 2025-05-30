@@ -1,190 +1,74 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hammerbbcrack - Improved Fetch Error Handling</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Hammerbbcrack</title>
   <style>
-    body { margin: 0; font-family: Arial, sans-serif; }
-    #toolbar { padding: 1rem; background: #f0f0f0; display: flex; align-items: center; }
-    #urlInput { flex: 1; padding: 0.5rem; font-size: 1rem; }
-    #goButton { padding: 0.5rem 1rem; font-size: 1rem; margin-left: 0.5rem; cursor: pointer; }
-    #pageFrame { border: none; width: 100%; height: calc(100vh - 70px); }
-    #loader {
-      display: none;
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      border: 8px solid #f3f3f3;
-      border-top: 8px solid #3498db;
-      border-radius: 50%;
-      width: 60px;
-      height: 60px;
-      animation: spin 1s linear infinite;
-      z-index: 9999;
-    }
-    @keyframes spin {
-      100% { transform: translate(-50%, -50%) rotate(360deg); }
-    }
-    #errorMsg {
-      color: red;
-      text-align: center;
-      padding: 1rem;
-    }
+    body { font-family: sans-serif; margin: 1rem; }
+    input, button { padding: .5rem; font-size: 1rem; }
+    #content { width: 100%; height: 80vh; overflow: auto; border: 1px solid #ccc; margin-top: 1rem; }
+    #viewer { display: none; }
   </style>
 </head>
 <body>
-  <div id="toolbar">
-    <input id="urlInput" type="url" placeholder="https://example.com" required>
-    <button id="goButton">Go</button>
+  <div id="form">
+    <h1>Hammerbbcrack</h1>
+    <p>閲覧したいサイトのドメインを入力してください。</p>
+
+    <label>
+      ドメイン：
+      <input type="text" id="url" style="width:60%;" placeholder="example.com/path/page.html" />
+    </label>
+    <button id="go">表示</button>
   </div>
-  <iframe id="pageFrame" sandbox="allow-scripts allow-forms"></iframe>
-  <div id="loader"></div>
-  <div id="errorMsg"></div>
+
+  <div id="viewer">
+    <button id="back">← 戻る</button>
+    <div id="content"></div>
+  </div>
 
   <script>
-    const PRIMARY_PROXY = 'https://api.allorigins.win/raw?url=';
-    // Set a fallback proxy URL; update this to a working fallback proxy if available.
-    const FALLBACK_PROXY = 'https://thingproxy.freeboard.io/fetch/';
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('u')) {
+      // ビューワーモード
+      document.getElementById('form').style.display = 'none';
+      document.getElementById('viewer').style.display = 'block';
 
-    const loader = document.getElementById('loader');
-    const errorMsg = document.getElementById('errorMsg');
-    const CACHE_TTL = 5 * 60 * 1000; // Cache TTL in milliseconds
-
-    function showLoader() {
-      loader.style.display = 'block';
-      errorMsg.textContent = '';
-    }
-    function hideLoader() {
-      loader.style.display = 'none';
-    }
-
-    async function fetchViaProxy(url, proxyUrl) {
-      const res = await fetch(proxyUrl + encodeURIComponent(url));
-      if (!res.ok) {
-        throw new Error(`Fetch error: ${res.statusText}`);
+      // パラメータから URL を取得
+      let inputUrl = decodeURIComponent(params.get('u'));
+      if (!inputUrl.startsWith('http://') && !inputUrl.startsWith('https://')) {
+        inputUrl = 'https://' + inputUrl;
       }
-      return await res.text();
-    }
+      const proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(inputUrl);
 
-    async function fetchWithCache(url) {
-      const key = 'proxy_cache_' + url;
-      const cached = localStorage.getItem(key);
-      if (cached) {
-        const obj = JSON.parse(cached);
-        if (Date.now() - obj.ts < CACHE_TTL) return obj.html;
-      }
-
-      try {
-        const html = await fetchViaProxy(url, PRIMARY_PROXY);
-        localStorage.setItem(key, JSON.stringify({ ts: Date.now(), html }));
-        return html;
-      } catch (err) {
-        // Retry with fallback proxy if primary fails.
-        try {
-          const html = await fetchViaProxy(url, FALLBACK_PROXY);
-          localStorage.setItem(key, JSON.stringify({ ts: Date.now(), html }));
-          return html;
-        } catch (fallbackErr) {
-          throw fallbackErr;
-        }
-      }
-    }
-
-    function rewriteHtml(html, baseUrl) {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-
-      let base = doc.querySelector('base');
-      if (!base) {
-        base = doc.createElement('base');
-        doc.head.insertBefore(base, doc.head.firstChild);
-      }
-      base.setAttribute('href', baseUrl);
-
-      const resourceSelectors = [
-        { tag: 'img', attr: 'src' },
-        { tag: 'link', attr: 'href' },
-        { tag: 'script', attr: 'src' },
-        { tag: 'video', attr: 'src' },
-        { tag: 'audio', attr: 'src' },
-        { tag: 'source', attr: 'src' },
-        { tag: 'iframe', attr: 'src' },
-        { tag: 'embed', attr: 'src' },
-        { tag: 'object', attr: 'data' }
-      ];
-      resourceSelectors.forEach(({ tag, attr }) => {
-        doc.querySelectorAll(tag).forEach(el => {
-          const original = el.getAttribute(attr);
-          if (original && !original.startsWith('data:')) {
-            try {
-              const abs = new URL(original, baseUrl).href;
-              el.setAttribute(attr, PRIMARY_PROXY + encodeURIComponent(abs));
-            } catch (err) {
-              // Invalid URL; ignore.
-            }
-          }
+      // プロキシ経由で取得し表示
+      fetch(proxyUrl)
+        .then(response => response.text())
+        .then(html => {
+          document.getElementById('content').innerHTML = html;
+        })
+        .catch(err => {
+          document.getElementById('content').textContent = 'コンテンツの取得に失敗しました。';
+          console.error(err);
         });
-      });
-
-      doc.querySelectorAll('a[href]').forEach(link => {
-        const href = link.getAttribute('href');
-        if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
-        const abs = href.startsWith('http') ? href : new URL(href, baseUrl).href;
-        link.addEventListener('click', function(e) {
-          e.preventDefault();
-          top.location.href = '/?url=' + encodeURIComponent(abs);
-        });
-        link.setAttribute('href', abs);
-      });
-
-      let serialized = '<!DOCTYPE html>' + doc.documentElement.outerHTML;
-      serialized = serialized.replace(/window\.parent/g, 'window');
-      return serialized;
     }
 
-    async function loadPage(targetUrl) {
-      showLoader();
-      try {
-        const html = await fetchWithCache(targetUrl);
-        const rewritten = rewriteHtml(html, targetUrl);
-        const iframe = document.getElementById('pageFrame');
-        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-        iframeDoc.open();
-        iframeDoc.write(rewritten);
-        iframeDoc.close();
-        const parsedDoc = new DOMParser().parseFromString(rewritten, 'text/html');
-        document.title = parsedDoc.title || targetUrl;
-      } catch (err) {
-        errorMsg.textContent = '読み込みエラー: ' + err.message;
-      } finally {
-        hideLoader();
+    document.getElementById('go').addEventListener('click', () => {
+      const rawDomain = document.getElementById('url').value.trim();
+      if (!rawDomain) {
+        alert('ドメインを入力してください');
+        return;
       }
-    }
-
-    document.getElementById('goButton').addEventListener('click', () => {
-      const url = document.getElementById('urlInput').value;
-      if (url) {
-        history.replaceState(null, '', `/?url=${encodeURIComponent(url)}`);
-        loadPage(url);
-      }
+      // クエリパラメータに入力値を設定してリダイレクト
+      const param = encodeURIComponent(rawDomain);
+      window.location.search = '?u=' + param;
     });
 
-    document.getElementById('urlInput').addEventListener('keyup', e => {
-      if (e.key === 'Enter') {
-        document.getElementById('goButton').click();
-      }
+    document.getElementById('back').addEventListener('click', () => {
+      // フォーム画面に戻る
+      window.location.href = window.location.pathname;
     });
-
-    const params = new URLSearchParams(location.search);
-    if (params.has('url')) {
-      const u = params.get('url');
-      document.getElementById('urlInput').value = u;
-      loadPage(u);
-    }
-
-    window.loadPage = loadPage;
   </script>
 </body>
 </html>
