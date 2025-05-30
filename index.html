@@ -2,183 +2,317 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hammerbbcrack</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hammerbbcrack Ultimate</title>
+  <meta name="referrer" content="no-referrer">
   <style>
-    :root { --bg:#fff; --fg:#333; --accent:#3498db; }
-    [data-theme="dark"]{--bg:#121212;--fg:#ddd;--accent:#4e9af1;}
-    body{margin:0;font-family:Arial,sans-serif;background:var(--bg);color:var(--fg);}
-    #toolbar{display:flex;flex-wrap:wrap;gap:.5rem;padding:1rem;background:var(--bg);}
-    #toolbar input,button{padding:.5rem;font-size:1rem;}
-    #progress, #sec-panel{position:fixed;left:0;width:100%;z-index:999;}
-    #progress{top:0;height:4px;background:#eee;}
-    #bar{height:100%;background:var(--accent);transition:width .2s;}
-    #sec-panel{bottom:0;padding:.5rem;background:rgba(0,0,0,.7);color:#fff;font-size:.8rem;display:flex;gap:1rem;}
-    #content{padding:1rem;}
-    img{max-width:100%;margin:.5rem 0;}
-    .thumbnail{max-height:200px;cursor:pointer;}
-    #darkToggle{position:fixed;bottom:1rem;right:1rem;padding:.5rem;background:var(--accent);color:#fff;border:none;border-radius:4px;}
-    #summary{padding:1rem;border:1px solid var(--accent);margin:1rem 0;background:rgba(52,152,219,0.1);}
+    :root {
+      --bg: #fff; --fg: #333; --accent: #3498db; --error: #e74c3c;
+    }
+    [data-theme="dark"] {
+      --bg: #121212; --fg: #ddd; --accent: #4e9af1; --error: #e74c3c;
+    }
+    body {
+      margin:0; font-family:Arial,sans-serif;
+      background:var(--bg); color:var(--fg);
+    }
+    #toolbar {
+      display:flex; flex-wrap:wrap; gap:0.5rem; padding:1rem;
+      background:var(--bg);
+    }
+    #toolbar input, #toolbar button {
+      padding:0.5rem; font-size:1rem;
+    }
+    #toolbar input { flex:1 1 200px; }
+    #toolbar .small { flex:0 0 auto; }
+    #progress {
+      position:fixed; top:0; left:0; width:100%; height:4px;
+      background:#eee; z-index:1000;
+    }
+    #bar {
+      width:0; height:100%; background:var(--accent);
+      transition:width 0.2s;
+    }
+    #status {
+      position:fixed; top:4px; left:50%; transform:translateX(-50%);
+      padding:0.2rem 0.5rem; background:var(--accent); color:#fff;
+      font-size:0.9rem; border-radius:2px; opacity:0; transition:opacity 0.3s;
+      z-index:1001;
+    }
+    #errorBanner {
+      position:fixed; top:0; left:0; width:100%;
+      background:var(--error); color:#fff; text-align:center;
+      padding:0.5rem; display:none; z-index:1002;
+    }
+    #content {
+      padding:1rem; margin-top:0.5rem;
+    }
+    img { max-width:100%; margin:0.5rem 0; }
+    .thumbnail { max-height:200px; cursor:pointer; }
+    #darkToggle { position:fixed; bottom:1rem; right:1rem;
+      padding:0.5rem; background:var(--accent); color:#fff;
+      border:none; border-radius:4px; cursor:pointer;
+    }
   </style>
 </head>
-<body>
+<body data-theme="light">
+  <div id="errorBanner"></div>
   <div id="toolbar">
-    <input id="urlInput" type="url" placeholder="https://example.com">
+    <input id="urlInput" type="url" placeholder="https://example.com" autofocus>
     <input id="selectorInput" type="text" placeholder="CSSセレクター (例:.main)">
     <button id="goButton">Go</button>
-    <button id="readerButton">📰 記事モード</button>
-    <button id="summarizeButton">✂ 要約</button>
-    <button id="pdfButton">📄 PDF保存</button>
+    <button id="backButton" class="small" disabled>◀︎</button>
+    <button id="forwardButton" class="small" disabled>▶︎</button>
+    <button id="downloadButton" class="small">📥 Save HTML</button>
   </div>
   <div id="progress"><div id="bar"></div></div>
+  <div id="status"></div>
   <div id="content">ここにページが表示されます…</div>
-  <div id="summary" hidden></div>
-  <div id="sec-panel">Blocked: <span id="blockCount">0</span> items</div>
   <button id="darkToggle">Toggle Dark</button>
 
-  <!-- 外部ライブラリ -->
   <script src="https://unpkg.com/idb-keyval@6/dist/idb-keyval.iife.js"></script>
   <script src="https://unpkg.com/@mozilla/readability@0.4.4/Readability.js"></script>
   <script>
   (async()=>{
-    const CORS_PROXY='https://api.allorigins.win/raw?url=';
-    const TTL=5*60e3, blacklistDomains=['ads.example','tracker.site'];
-    const easyList = [/googlesyndication\.com/,/doubleclick\.net/];
-    let blockCount=0;
+    // プロキシリスト
+    const PROXIES = [
+      'https://api.allorigins.win/raw?url=',
+      'https://corsproxy.io/?',
+      'https://thingproxy.freeboard.io/fetch/'
+    ];
+    const TIMEOUT = 15000;  // 15秒タイムアウト
+    const TTL = 5*60*1000;
+    const BLACKLIST = ['ads.example','tracker.site','malicious.com'];
+    const EASYLIST = [
+      /googlesyndication\.com/, /doubleclick\.net/, /adservice\.google\.com/,
+      /adsystem\.com/, /analytics\.js/
+    ];
+    let blockCount = 0;
 
-    // UI Elements
-    const bar=document.getElementById('bar');
-    const content=document.getElementById('content');
-    const summaryDiv=document.getElementById('summary');
-    const blockCntSpan=document.getElementById('blockCount');
-    const root=document.documentElement;
+    // 要素取得
+    const urlInput = document.getElementById('urlInput');
+    const selectorInput = document.getElementById('selectorInput');
+    const goBtn = document.getElementById('goButton');
+    const backBtn = document.getElementById('backButton');
+    const fwdBtn = document.getElementById('forwardButton');
+    const dlBtn = document.getElementById('downloadButton');
+    const bar = document.getElementById('bar');
+    const status = document.getElementById('status');
+    const errBanner = document.getElementById('errorBanner');
+    const content = document.getElementById('content');
+    const root = document.documentElement;
 
-    // ダークモード
-    function setTheme(t){ root.setAttribute('data-theme',t);localStorage.theme=t; }
-    document.getElementById('darkToggle').onclick=()=>setTheme(root.getAttribute('data-theme')==='dark'?'light':'dark');
-    setTheme(localStorage.theme|| (matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'));
+    // ダークモード初期化
+    function setTheme(t){
+      root.setAttribute('data-theme', t);
+      localStorage.theme = t;
+    }
+    document.getElementById('darkToggle').onclick = ()=> {
+      setTheme(root.getAttribute('data-theme')==='dark' ? 'light' : 'dark');
+    };
+    setTheme(localStorage.theme || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'));
 
-    // HTTP+Streamキャッシュ + 広告フィルタ
-    async function fetchCache(url){
-      const key='uc_'+url;
-      const e=await idbKeyval.get(key);
-      if(e && Date.now()-e.ts<TTL) return e.html;
-      const host=new URL(url).hostname;
-      if(blacklistDomains.includes(host)) throw 'Domain blocked';
-      const res=await fetch(CORS_PROXY+encodeURIComponent(url));
-      const reader=res.body.getReader(), len=+res.headers.get('Content-Length')||0;
-      let received=0, chunks=[];
-      while(true){
-        const {done,value}=await reader.read();
-        if(done) break;
-        // 広告スクリプト／iframeフィルタ
-        const txt=new TextDecoder().decode(value);
-        if(easyList.some(rx=>rx.test(txt))){ blockCount++; blockCntSpan.textContent=blockCount; continue; }
-        chunks.push(value);
-        received+=value.length;
-        if(len) bar.style.width=(received/len*100)+'%';
-      }
-      const html=new TextDecoder('utf-8').decode(new Uint8Array(chunks.flat()));
-      await idbKeyval.set(key,{ts:Date.now(),html});
-      bar.style.width='0%';
-      return html;
+    // ステータスメッセージ表示
+    function showStatus(msg, duration=1500){
+      status.textContent = msg;
+      status.style.opacity = '1';
+      clearTimeout(status._tid);
+      status._tid = setTimeout(()=> status.style.opacity = '0', duration);
     }
 
-    // ページ読込本体
-    async function loadPage(u, useReadability=false){
-      document.title='Loading…'; content.innerHTML=''; summaryDiv.hidden=true;
-      try{
-        let html=await fetchCache(u);
-        const parser=new DOMParser(), doc=parser.parseFromString(html,'text/html');
-        // Readability
-        if(useReadability){
-          const article=new Readability(doc).parse();
-          if(article){ content.innerHTML=article.content; document.title=article.title; }
-        } else {
-          // 通常パイプライン
-          // base, 絶対化, meta/script/CSP排除, CSS inline
-          let base=doc.querySelector('base')||doc.head.prepend(doc.createElement('base'))&&doc.head.firstChild;
-          base.setAttribute('href',u);
-          doc.querySelectorAll('[src],[href]').forEach(el=>{
-            const attr=el.hasAttribute('src')?'src':'href',v=el.getAttribute(attr);
-            if(v&&!/^(https?:|\/\/|data:)/.test(v)) el.setAttribute(attr,new URL(v,u).href);
-          });
-          doc.querySelectorAll('meta[http-equiv],script').forEach(e=>e.remove());
-          await Promise.all([...doc.querySelectorAll('link[rel=stylesheet]')].map(async l=>{
-            try{const txt=await fetch(CORS_PROXY+encodeURIComponent(l.href)).then(r=>r.text());
-                 const s=document.createElement('style');s.textContent=txt; l.replaceWith(s);}
-            catch{} }));
-          // Lazy+動画+フォーム
-          doc.querySelectorAll('img').forEach(img=>{img.loading='lazy';img.classList.add('thumbnail');img.onclick=()=>img.classList.toggle('thumbnail');});
-          doc.querySelectorAll('video').forEach(v=>v.setAttribute('controls',''));
-          doc.querySelectorAll('form').forEach(f=>{
-            const abs=new URL(f.action||u,u).href; f.method='GET'; f.action='/';
-            const i=document.createElement('input');i.type='hidden';i.name='url';i.value=abs;f.appendChild(i);
-          });
-          // セレクター抽出
-          const sel=document.getElementById('selectorInput').value.trim();
-          const frag=sel?(doc.querySelector(sel)||document.createTextNode('該当なし')).cloneNode(true)
-                        :doc.body.cloneNode(true);
-          content.appendChild(frag);
-        }
-      }catch(e){
-        content.textContent='Error: '+e; document.title='Error';
-      }finally{ bar.style.width='0%'; }
+    // エラーバナー
+    function showError(msg){
+      errBanner.textContent = msg;
+      errBanner.style.display = 'block';
+      setTimeout(()=> errBanner.style.display = 'none', 4000);
     }
 
-    // ページ要約
-    function summarize(){
-      const txt=content.textContent||'';
-      // 超簡易サマリ：文で分割して先頭3文
-      const sents=txt.match(/[^。！？]+[。！？]/g)||[];
-      const top3=sents.slice(0,3).join('');
-      summaryDiv.innerHTML='<strong>要約:</strong><p>'+top3+'</p>';
-      summaryDiv.hidden=false;
+    // URL共有履歴管理
+    function pushState(url, selector){
+      history.pushState({url,selector}, '', `?u=${encodeURIComponent(url)}&s=${btoa(selector||'')}`);
+      backBtn.disabled = !(history.state && history.length>1);
+      fwdBtn.disabled = true;
     }
-
-    // PDF出力
-    function exportPDF(){
-      window.print();
-    }
-
-    // キーバインド
-    document.addEventListener('keydown',e=>{
-      if(e.target!==document.body) return;
-      switch(e.key){
-        case 'j': window.scrollBy(0,100); break;
-        case 'k': window.scrollBy(0,-100); break;
-        case 's': summarize(); break;
-        case 'p': exportPDF(); break;
-        case 'r': loadPage(document.getElementById('urlInput').value,true); break;
+    window.addEventListener('popstate', e=>{
+      if(e.state){
+        urlInput.value = e.state.url;
+        selectorInput.value = atob(e.state.selector);
+        _loadPage(e.state.url, false);
+        backBtn.disabled = !(history.state && history.length>1);
+        fwdBtn.disabled = false;
       }
     });
 
-    // ボタン連携
-    document.getElementById('goButton').onclick=()=>loadPage(urlInput.value,false);
-    document.getElementById('readerButton').onclick=()=>loadPage(urlInput.value,true);
-    document.getElementById('summarizeButton').onclick=summarize;
-    document.getElementById('pdfButton').onclick=exportPDF;
-    ['urlInput','selectorInput'].forEach(id=>document.getElementById(id).addEventListener('keyup',e=>{ if(e.key==='Enter') loadPage(urlInput.value,false); }));
+    // CORS＋キャッシュ＋フィルタ
+    async function fetchWithFallback(rawUrl){
+      const key = 'uc_'+rawUrl;
+      const cached = await idbKeyval.get(key);
+      if(cached && Date.now() - cached.ts < TTL) return cached.html;
 
-    // ServiceWorker（オフライン保持用）
-    const swCode=`
-      const C='cache-v2';
-      self.addEventListener('install',e=>e.waitUntil(self.skipWaiting()));
-      self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));
-      self.addEventListener('fetch',e=>{
-        e.respondWith(caches.open(C).then(c=>c.match(e.request).then(r=>r||fetch(e.request).then(f=>{c.put(e.request,f.clone());return f}))));
+      const host = new URL(rawUrl).hostname;
+      if(BLACKLIST.includes(host)) throw new Error('Domain blocked');
+
+      let lastErr;
+      for(const proxy of PROXIES){
+        try{
+          const controller = new AbortController();
+          const timeout = setTimeout(()=> controller.abort(), TIMEOUT);
+          showStatus(`Fetching via ${new URL(proxy).hostname}…`);
+          const res = await fetch(proxy + encodeURIComponent(rawUrl), {
+            credentials:'omit',
+            referrerPolicy:'no-referrer',
+            signal: controller.signal
+          });
+          clearTimeout(timeout);
+          if(!res.ok) throw new Error(res.status+' '+res.statusText);
+          const reader = res.body.getReader();
+          const len = +res.headers.get('Content-Length')||0;
+          let received=0, chunks=[];
+          while(true){
+            const {done,value} = await reader.read();
+            if(done) break;
+            const text = new TextDecoder().decode(value);
+            if(EASYLIST.some(rx=>rx.test(text))){
+              blockCount++;
+              showStatus(`Blocked ads: ${blockCount}`);
+              continue;
+            }
+            chunks.push(value);
+            received += value.length;
+            if(len) bar.style.width = (received/len*100)+'%';
+          }
+          const html = new TextDecoder('utf-8').decode(new Uint8Array(chunks.flat()));
+          await idbKeyval.set(key, {ts:Date.now(), html});
+          bar.style.width = '0%';
+          return html;
+        } catch(err){
+          lastErr = err;
+          bar.style.width = '0%';
+        }
+      }
+      throw lastErr;
+    }
+
+    // 本体読み込み
+    async function _loadPage(rawUrl, useReader){
+      document.title = 'Loading…';
+      content.innerHTML = '';
+      try{
+        const html = await fetchWithFallback(rawUrl);
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        document.title = doc.title || rawUrl;
+
+        // 記事モード
+        if(useReader){
+          const art = new Readability(doc).parse();
+          if(art){
+            content.innerHTML = art.content;
+            return;
+          }
+        }
+
+        // base 絶対化
+        let base = doc.querySelector('base');
+        if(!base){
+          base = doc.createElement('base');
+          doc.head.insertBefore(base, doc.head.firstChild);
+        }
+        base.setAttribute('href', rawUrl);
+
+        // src/href 絶対化
+        doc.querySelectorAll('[src],[href]').forEach(el =>{
+          const attr = el.hasAttribute('src') ? 'src' : 'href';
+          const v = el.getAttribute(attr);
+          if(v && !/^(https?:|\/\/|data:)/.test(v)){
+            el.setAttribute(attr, new URL(v, rawUrl).href);
+          }
+        });
+
+        // 不要タグ除去
+        doc.querySelectorAll('meta[http-equiv],script,iframe').forEach(e=>e.remove());
+
+        // CSS inline
+        await Promise.all([...doc.querySelectorAll('link[rel=stylesheet]')].map(async l=>{
+          try{
+            const css = await fetch(PROXIES[0]+encodeURIComponent(l.href), {
+              credentials:'omit', referrerPolicy:'no-referrer'
+            }).then(r=>r.text());
+            const s = document.createElement('style');
+            s.textContent = css;
+            l.replaceWith(s);
+          }catch{}
+        }));
+
+        // 画像／動画／フォーム
+        doc.querySelectorAll('img').forEach(img=>{
+          img.loading='lazy';
+          img.classList.add('thumbnail');
+          img.onclick = ()=> img.classList.toggle('thumbnail');
+        });
+        doc.querySelectorAll('video').forEach(v=> v.setAttribute('controls',''));
+        doc.querySelectorAll('form').forEach(f=>{
+          const abs = new URL(f.action||rawUrl, rawUrl).href;
+          f.method='GET'; f.action='/';
+          const inp = document.createElement('input');
+          inp.type='hidden'; inp.name='url'; inp.value=abs;
+          f.appendChild(inp);
+        });
+
+        // セレクター抽出
+        const sel = selectorInput.value.trim();
+        const frag = sel
+          ? (doc.querySelector(sel) || document.createTextNode('該当する要素がありません')).cloneNode(true)
+          : doc.body.cloneNode(true);
+        content.appendChild(frag);
+      } catch(err){
+        showError(err.message || 'Unknown error');
+        content.textContent = 'Error: ' + err.message;
+        document.title = 'Error';
+      } finally {
+        bar.style.width = '0%';
+      }
+    }
+
+    // ダウンロード
+    function downloadHTML(){
+      const blob = new Blob([
+        '<!DOCTYPE html>\n<html>'+document.documentElement.innerHTML+'</html>'
+      ], { type: 'text/html' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'snapshot.html';
+      a.click();
+    }
+
+    // イベント紐付け
+    goBtn.onclick = ()=> {
+      const u = urlInput.value.trim();
+      if(!u) return;
+      pushState(u, selectorInput.value);
+      _loadPage(u, false);
+    };
+    backBtn.onclick = ()=> history.back();
+    fwdBtn.onclick = ()=> history.forward();
+    dlBtn.onclick = downloadHTML;
+    [urlInput, selectorInput].forEach(el=>{
+      el.addEventListener('keyup', e=>{
+        if(e.key==='Enter') goBtn.click();
       });
-    `;
-    const swBlob=new Blob([swCode],{type:'text/javascript'});
-    navigator.serviceWorker.register(URL.createObjectURL(swBlob));
+    });
 
-    // プリコネクト
-    document.head.insertAdjacentHTML('beforeend',`
-      <link rel="preconnect" href="${location.origin}">
-      <link rel="dns-prefetch" href="${location.origin}">
-    `);
+    // 初期読込(state or url)
+    (()=>{
+      const p = new URLSearchParams(location.search);
+      if(p.has('u')){
+        const u = p.get('u');
+        const s = atob(p.get('s')||'');
+        urlInput.value = u;
+        selectorInput.value = s;
+        _loadPage(u, false);
+        backBtn.disabled = !(history.state && history.length>1);
+      }
+    })();
 
-    // 共有URL(state)復元は省略（前バージョンと同様に実装可）
   })();
   </script>
 </body>
