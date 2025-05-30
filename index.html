@@ -70,18 +70,18 @@
   <div id="content">ここにページが表示されます…</div>
   <button id="darkToggle">Toggle Dark</button>
 
-  <script src="https://unpkg.com/idb-keyval@6/dist/idb-keyval.iife.js"></script>
+  <!-- Readabilityのみ外部読み込み -->
   <script src="https://unpkg.com/@mozilla/readability@0.4.4/Readability.js"></script>
   <script>
   (async()=>{
-    // プロキシリスト
+    // 複数プロキシ＋タイムアウト＋ローカルキャッシュ
     const PROXIES = [
       'https://api.allorigins.win/raw?url=',
       'https://corsproxy.io/?',
       'https://thingproxy.freeboard.io/fetch/'
     ];
-    const TIMEOUT = 15000;  // 15秒タイムアウト
-    const TTL = 5*60*1000;
+    const TIMEOUT = 15000;
+    const TTL = 5 * 60 * 1000;
     const BLACKLIST = ['ads.example','tracker.site','malicious.com'];
     const EASYLIST = [
       /googlesyndication\.com/, /doubleclick\.net/, /adservice\.google\.com/,
@@ -89,7 +89,7 @@
     ];
     let blockCount = 0;
 
-    // 要素取得
+    // 要素
     const urlInput = document.getElementById('urlInput');
     const selectorInput = document.getElementById('selectorInput');
     const goBtn = document.getElementById('goButton');
@@ -102,90 +102,94 @@
     const content = document.getElementById('content');
     const root = document.documentElement;
 
-    // ダークモード初期化
+    // ダークモード
     function setTheme(t){
       root.setAttribute('data-theme', t);
       localStorage.theme = t;
     }
-    document.getElementById('darkToggle').onclick = ()=> {
+    document.getElementById('darkToggle').onclick = ()=>{
       setTheme(root.getAttribute('data-theme')==='dark' ? 'light' : 'dark');
     };
     setTheme(localStorage.theme || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'));
 
-    // ステータスメッセージ表示
+    // ステータス
     function showStatus(msg, duration=1500){
       status.textContent = msg;
       status.style.opacity = '1';
       clearTimeout(status._tid);
       status._tid = setTimeout(()=> status.style.opacity = '0', duration);
     }
-
-    // エラーバナー
     function showError(msg){
       errBanner.textContent = msg;
       errBanner.style.display = 'block';
       setTimeout(()=> errBanner.style.display = 'none', 4000);
     }
 
-    // URL共有履歴管理
-    function pushState(url, selector){
-      history.pushState({url,selector}, '', `?u=${encodeURIComponent(url)}&s=${btoa(selector||'')}`);
-      backBtn.disabled = !(history.state && history.length>1);
-      fwdBtn.disabled = true;
+    // ローカルキャッシュ取得／保存
+    function getCache(key){
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+        const obj = JSON.parse(raw);
+        if (Date.now() - obj.ts > TTL) {
+          localStorage.removeItem(key);
+          return null;
+        }
+        return obj.html;
+      } catch { return null; }
     }
-    window.addEventListener('popstate', e=>{
-      if(e.state){
-        urlInput.value = e.state.url;
-        selectorInput.value = atob(e.state.selector);
-        _loadPage(e.state.url, false);
-        backBtn.disabled = !(history.state && history.length>1);
-        fwdBtn.disabled = false;
-      }
-    });
+    function setCache(key, html){
+      try {
+        localStorage.setItem(key, JSON.stringify({ ts: Date.now(), html }));
+      } catch {}
+    }
 
-    // CORS＋キャッシュ＋フィルタ
+    // フェッチ＋キャッシュ＋フィルタ
     async function fetchWithFallback(rawUrl){
-      const key = 'uc_'+rawUrl;
-      const cached = await idbKeyval.get(key);
-      if(cached && Date.now() - cached.ts < TTL) return cached.html;
+      const key = 'c_' + rawUrl;
+      const cached = getCache(key);
+      if (cached) return cached;
 
       const host = new URL(rawUrl).hostname;
-      if(BLACKLIST.includes(host)) throw new Error('Domain blocked');
+      if (BLACKLIST.includes(host)) throw new Error('Domain blocked');
 
       let lastErr;
-      for(const proxy of PROXIES){
-        try{
+      for (const proxy of PROXIES) {
+        try {
           const controller = new AbortController();
           const timeout = setTimeout(()=> controller.abort(), TIMEOUT);
           showStatus(`Fetching via ${new URL(proxy).hostname}…`);
           const res = await fetch(proxy + encodeURIComponent(rawUrl), {
-            credentials:'omit',
-            referrerPolicy:'no-referrer',
+            credentials: 'omit',
+            referrerPolicy: 'no-referrer',
             signal: controller.signal
           });
           clearTimeout(timeout);
-          if(!res.ok) throw new Error(res.status+' '+res.statusText);
+          if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+
+          // ストリーミングで広告ブロック
           const reader = res.body.getReader();
-          const len = +res.headers.get('Content-Length')||0;
-          let received=0, chunks=[];
-          while(true){
-            const {done,value} = await reader.read();
-            if(done) break;
+          const len = +res.headers.get('Content-Length') || 0;
+          let received = 0, chunks = [];
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
             const text = new TextDecoder().decode(value);
-            if(EASYLIST.some(rx=>rx.test(text))){
+            if (EASYLIST.some(rx=>rx.test(text))) {
               blockCount++;
               showStatus(`Blocked ads: ${blockCount}`);
               continue;
             }
             chunks.push(value);
             received += value.length;
-            if(len) bar.style.width = (received/len*100)+'%';
+            if (len) bar.style.width = (received/len*100) + '%';
           }
+
           const html = new TextDecoder('utf-8').decode(new Uint8Array(chunks.flat()));
-          await idbKeyval.set(key, {ts:Date.now(), html});
+          setCache(key, html);
           bar.style.width = '0%';
           return html;
-        } catch(err){
+        } catch (err) {
           lastErr = err;
           bar.style.width = '0%';
         }
@@ -193,38 +197,37 @@
       throw lastErr;
     }
 
-    // 本体読み込み
-    async function _loadPage(rawUrl, useReader){
+    // ページ読み込み
+    async function _loadPage(url, useReader){
       document.title = 'Loading…';
       content.innerHTML = '';
-      try{
-        const html = await fetchWithFallback(rawUrl);
+      try {
+        const html = await fetchWithFallback(url);
         const doc = new DOMParser().parseFromString(html, 'text/html');
-        document.title = doc.title || rawUrl;
+        document.title = doc.title || url;
 
-        // 記事モード
-        if(useReader){
+        if (useReader) {
           const art = new Readability(doc).parse();
-          if(art){
+          if (art) {
             content.innerHTML = art.content;
             return;
           }
         }
 
-        // base 絶対化
+        // baseタグ
         let base = doc.querySelector('base');
-        if(!base){
+        if (!base) {
           base = doc.createElement('base');
           doc.head.insertBefore(base, doc.head.firstChild);
         }
-        base.setAttribute('href', rawUrl);
+        base.setAttribute('href', url);
 
-        // src/href 絶対化
-        doc.querySelectorAll('[src],[href]').forEach(el =>{
+        // src/href → 絶対化
+        doc.querySelectorAll('[src],[href]').forEach(el => {
           const attr = el.hasAttribute('src') ? 'src' : 'href';
           const v = el.getAttribute(attr);
-          if(v && !/^(https?:|\/\/|data:)/.test(v)){
-            el.setAttribute(attr, new URL(v, rawUrl).href);
+          if (v && !/^(https?:|\/\/|data:)/.test(v)) {
+            el.setAttribute(attr, new URL(v, url).href);
           }
         });
 
@@ -233,29 +236,31 @@
 
         // CSS inline
         await Promise.all([...doc.querySelectorAll('link[rel=stylesheet]')].map(async l=>{
-          try{
-            const css = await fetch(PROXIES[0]+encodeURIComponent(l.href), {
-              credentials:'omit', referrerPolicy:'no-referrer'
+          try {
+            const css = await fetch(PROXIES[0] + encodeURIComponent(l.href), {
+              credentials: 'omit',
+              referrerPolicy: 'no-referrer'
             }).then(r=>r.text());
             const s = document.createElement('style');
             s.textContent = css;
             l.replaceWith(s);
-          }catch{}
+          } catch {}
         }));
 
-        // 画像／動画／フォーム
+        // メディアとフォーム
         doc.querySelectorAll('img').forEach(img=>{
-          img.loading='lazy';
+          img.loading = 'lazy';
           img.classList.add('thumbnail');
           img.onclick = ()=> img.classList.toggle('thumbnail');
         });
-        doc.querySelectorAll('video').forEach(v=> v.setAttribute('controls',''));
+        doc.querySelectorAll('video').forEach(v=>v.setAttribute('controls',''));
         doc.querySelectorAll('form').forEach(f=>{
-          const abs = new URL(f.action||rawUrl, rawUrl).href;
-          f.method='GET'; f.action='/';
-          const inp = document.createElement('input');
-          inp.type='hidden'; inp.name='url'; inp.value=abs;
-          f.appendChild(inp);
+          const abs = new URL(f.action||url, url).href;
+          f.method = 'GET';
+          f.action = '/';
+          const i = document.createElement('input');
+          i.type = 'hidden'; i.name = 'url'; i.value = abs;
+          f.appendChild(i);
         });
 
         // セレクター抽出
@@ -264,7 +269,8 @@
           ? (doc.querySelector(sel) || document.createTextNode('該当する要素がありません')).cloneNode(true)
           : doc.body.cloneNode(true);
         content.appendChild(frag);
-      } catch(err){
+
+      } catch (err) {
         showError(err.message || 'Unknown error');
         content.textContent = 'Error: ' + err.message;
         document.title = 'Error';
@@ -273,7 +279,7 @@
       }
     }
 
-    // ダウンロード
+    // HTMLダウンロード
     function downloadHTML(){
       const blob = new Blob([
         '<!DOCTYPE html>\n<html>'+document.documentElement.innerHTML+'</html>'
@@ -284,35 +290,37 @@
       a.click();
     }
 
-    // イベント紐付け
-    goBtn.onclick = ()=> {
+    // イベント
+    goBtn.onclick = ()=>{
       const u = urlInput.value.trim();
-      if(!u) return;
-      pushState(u, selectorInput.value);
+      if (!u) return;
+      history.pushState({u}, '', `?u=${encodeURIComponent(u)}`);
       _loadPage(u, false);
+      backBtn.disabled = !history.state;
     };
     backBtn.onclick = ()=> history.back();
     fwdBtn.onclick = ()=> history.forward();
     dlBtn.onclick = downloadHTML;
     [urlInput, selectorInput].forEach(el=>{
-      el.addEventListener('keyup', e=>{
-        if(e.key==='Enter') goBtn.click();
-      });
+      el.addEventListener('keyup', e=>{ if (e.key==='Enter') goBtn.click(); });
+    });
+    window.addEventListener('popstate', e=>{
+      if (e.state && e.state.u) {
+        urlInput.value = e.state.u;
+        _loadPage(e.state.u, false);
+      }
     });
 
-    // 初期読込(state or url)
+    // 初回読込
     (()=>{
       const p = new URLSearchParams(location.search);
-      if(p.has('u')){
+      if (p.has('u')) {
         const u = p.get('u');
-        const s = atob(p.get('s')||'');
         urlInput.value = u;
-        selectorInput.value = s;
         _loadPage(u, false);
-        backBtn.disabled = !(history.state && history.length>1);
+        backBtn.disabled = !history.state;
       }
     })();
-
   })();
   </script>
 </body>
