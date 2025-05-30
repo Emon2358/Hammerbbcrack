@@ -2,326 +2,159 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hammerbbcrack Ultimate</title>
-  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hammerbbcrack</title>
   <style>
-    :root {
-      --bg: #fff; --fg: #333; --accent: #3498db; --error: #e74c3c;
-    }
-    [data-theme="dark"] {
-      --bg: #121212; --fg: #ddd; --accent: #4e9af1; --error: #e74c3c;
-    }
-    body {
-      margin:0; font-family:Arial,sans-serif;
-      background:var(--bg); color:var(--fg);
-    }
-    #toolbar {
-      display:flex; flex-wrap:wrap; gap:0.5rem; padding:1rem;
-      background:var(--bg);
-    }
-    #toolbar input, #toolbar button {
-      padding:0.5rem; font-size:1rem;
-    }
-    #toolbar input { flex:1 1 200px; }
-    #toolbar .small { flex:0 0 auto; }
-    #progress {
-      position:fixed; top:0; left:0; width:100%; height:4px;
-      background:#eee; z-index:1000;
-    }
-    #bar {
-      width:0; height:100%; background:var(--accent);
-      transition:width 0.2s;
-    }
-    #status {
-      position:fixed; top:4px; left:50%; transform:translateX(-50%);
-      padding:0.2rem 0.5rem; background:var(--accent); color:#fff;
-      font-size:0.9rem; border-radius:2px; opacity:0; transition:opacity 0.3s;
-      z-index:1001;
-    }
-    #errorBanner {
-      position:fixed; top:0; left:0; width:100%;
-      background:var(--error); color:#fff; text-align:center;
-      padding:0.5rem; display:none; z-index:1002;
-    }
-    #content {
-      padding:1rem; margin-top:0.5rem;
-    }
-    img { max-width:100%; margin:0.5rem 0; }
-    .thumbnail { max-height:200px; cursor:pointer; }
-    #darkToggle { position:fixed; bottom:1rem; right:1rem;
-      padding:0.5rem; background:var(--accent); color:#fff;
-      border:none; border-radius:4px; cursor:pointer;
-    }
+    body { margin: 0; font-family: Arial, sans-serif; }
+    #toolbar { padding: 1rem; background: #f0f0f0; display: flex; align-items: center; }
+    #urlInput { flex: 1; padding: 0.5rem; font-size: 1rem; }
+    #goButton { padding: 0.5rem 1rem; font-size: 1rem; margin-left: 0.5rem; cursor: pointer; }
+    #content { padding: 1rem; }
+    #loader { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+              border: 8px solid #f3f3f3; border-top: 8px solid #3498db; border-radius: 50%; width: 60px; height: 60px;
+              animation: spin 1s linear infinite; z-index: 9999; }
+    @keyframes spin { 100% { transform: translate(-50%, -50%) rotate(360deg); } }
+    img { max-width: 100%; display: block; margin: 0.5rem 0; }
+    .thumbnail { max-height: 200px; cursor: pointer; }
   </style>
 </head>
-<body data-theme="light">
-  <div id="errorBanner"></div>
+<body>
   <div id="toolbar">
-    <input id="urlInput" type="url" placeholder="https://example.com" autofocus>
-    <input id="selectorInput" type="text" placeholder="CSSセレクター (例:.main)">
+    <input id="urlInput" type="url" placeholder="https://example.com" required>
     <button id="goButton">Go</button>
-    <button id="backButton" class="small" disabled>◀︎</button>
-    <button id="forwardButton" class="small" disabled>▶︎</button>
-    <button id="downloadButton" class="small">📥 Save HTML</button>
   </div>
-  <div id="progress"><div id="bar"></div></div>
-  <div id="status"></div>
-  <div id="content">ここにページが表示されます…</div>
-  <button id="darkToggle">Toggle Dark</button>
+  <div id="content">ここにページが表示されます...</div>
+  <div id="loader"></div>
 
-  <!-- Readabilityのみ外部読み込み -->
-  <script src="https://unpkg.com/@mozilla/readability@0.4.4/Readability.js"></script>
   <script>
-  (async()=>{
-    // 複数プロキシ＋タイムアウト＋ローカルキャッシュ
-    const PROXIES = [
-      'https://api.allorigins.win/raw?url=',
-      'https://corsproxy.io/?',
-      'https://thingproxy.freeboard.io/fetch/'
-    ];
-    const TIMEOUT = 15000;
-    const TTL = 5 * 60 * 1000;
-    const BLACKLIST = ['ads.example','tracker.site','malicious.com'];
-    const EASYLIST = [
-      /googlesyndication\.com/, /doubleclick\.net/, /adservice\.google\.com/,
-      /adsystem\.com/, /analytics\.js/
-    ];
-    let blockCount = 0;
+    const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+    const loader = document.getElementById('loader');
+    const CACHE_TTL = 5 * 60 * 1000;
 
-    // 要素
-    const urlInput = document.getElementById('urlInput');
-    const selectorInput = document.getElementById('selectorInput');
-    const goBtn = document.getElementById('goButton');
-    const backBtn = document.getElementById('backButton');
-    const fwdBtn = document.getElementById('forwardButton');
-    const dlBtn = document.getElementById('downloadButton');
-    const bar = document.getElementById('bar');
-    const status = document.getElementById('status');
-    const errBanner = document.getElementById('errorBanner');
-    const content = document.getElementById('content');
-    const root = document.documentElement;
+    function showLoader() { loader.style.display = 'block'; }
+    function hideLoader() { loader.style.display = 'none'; }
 
-    // ダークモード
-    function setTheme(t){
-      root.setAttribute('data-theme', t);
-      localStorage.theme = t;
-    }
-    document.getElementById('darkToggle').onclick = ()=>{
-      setTheme(root.getAttribute('data-theme')==='dark' ? 'light' : 'dark');
-    };
-    setTheme(localStorage.theme || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'));
-
-    // ステータス
-    function showStatus(msg, duration=1500){
-      status.textContent = msg;
-      status.style.opacity = '1';
-      clearTimeout(status._tid);
-      status._tid = setTimeout(()=> status.style.opacity = '0', duration);
-    }
-    function showError(msg){
-      errBanner.textContent = msg;
-      errBanner.style.display = 'block';
-      setTimeout(()=> errBanner.style.display = 'none', 4000);
-    }
-
-    // ローカルキャッシュ取得／保存
-    function getCache(key){
-      try {
-        const raw = localStorage.getItem(key);
-        if (!raw) return null;
-        const obj = JSON.parse(raw);
-        if (Date.now() - obj.ts > TTL) {
-          localStorage.removeItem(key);
-          return null;
-        }
-        return obj.html;
-      } catch { return null; }
-    }
-    function setCache(key, html){
-      try {
-        localStorage.setItem(key, JSON.stringify({ ts: Date.now(), html }));
-      } catch {}
-    }
-
-    // フェッチ＋キャッシュ＋フィルタ
-    async function fetchWithFallback(rawUrl){
-      const key = 'c_' + rawUrl;
-      const cached = getCache(key);
-      if (cached) return cached;
-
-      const host = new URL(rawUrl).hostname;
-      if (BLACKLIST.includes(host)) throw new Error('Domain blocked');
-
-      let lastErr;
-      for (const proxy of PROXIES) {
-        try {
-          const controller = new AbortController();
-          const timeout = setTimeout(()=> controller.abort(), TIMEOUT);
-          showStatus(`Fetching via ${new URL(proxy).hostname}…`);
-          const res = await fetch(proxy + encodeURIComponent(rawUrl), {
-            credentials: 'omit',
-            referrerPolicy: 'no-referrer',
-            signal: controller.signal
-          });
-          clearTimeout(timeout);
-          if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
-
-          // ストリーミングで広告ブロック
-          const reader = res.body.getReader();
-          const len = +res.headers.get('Content-Length') || 0;
-          let received = 0, chunks = [];
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const text = new TextDecoder().decode(value);
-            if (EASYLIST.some(rx=>rx.test(text))) {
-              blockCount++;
-              showStatus(`Blocked ads: ${blockCount}`);
-              continue;
-            }
-            chunks.push(value);
-            received += value.length;
-            if (len) bar.style.width = (received/len*100) + '%';
-          }
-
-          const html = new TextDecoder('utf-8').decode(new Uint8Array(chunks.flat()));
-          setCache(key, html);
-          bar.style.width = '0%';
-          return html;
-        } catch (err) {
-          lastErr = err;
-          bar.style.width = '0%';
-        }
+    async function fetchWithCache(url) {
+      const key = 'proxy_cache_' + url;
+      const cached = localStorage.getItem(key);
+      if (cached) {
+        const obj = JSON.parse(cached);
+        if (Date.now() - obj.ts < CACHE_TTL) return obj.html;
       }
-      throw lastErr;
+      const res = await fetch(CORS_PROXY + encodeURIComponent(url));
+      const html = await res.text();
+      localStorage.setItem(key, JSON.stringify({ ts: Date.now(), html }));
+      return html;
     }
 
-    // ページ読み込み
-    async function _loadPage(url, useReader){
-      document.title = 'Loading…';
-      content.innerHTML = '';
-      try {
-        const html = await fetchWithFallback(url);
-        const doc = new DOMParser().parseFromString(html, 'text/html');
-        document.title = doc.title || url;
-
-        if (useReader) {
-          const art = new Readability(doc).parse();
-          if (art) {
-            content.innerHTML = art.content;
-            return;
+    function rewriteResourceUrls(doc, baseUrl) {
+      const selectors = [
+        { tag: 'img', attr: 'src' },
+        { tag: 'link', attr: 'href' },
+        { tag: 'script', attr: 'src' },
+        { tag: 'video', attr: 'src' },
+        { tag: 'audio', attr: 'src' },
+        { tag: 'source', attr: 'src' },
+        { tag: 'iframe', attr: 'src' },
+        { tag: 'embed', attr: 'src' },
+        { tag: 'object', attr: 'data' }
+      ];
+      selectors.forEach(({ tag, attr }) => {
+        doc.querySelectorAll(tag).forEach(el => {
+          const original = el.getAttribute(attr);
+          if (original && !original.startsWith('data:')) {
+            const abs = new URL(original, baseUrl).href;
+            el.setAttribute(attr, CORS_PROXY + encodeURIComponent(abs));
           }
-        }
+        });
+      });
+    }
 
-        // baseタグ
+    function interceptLinks(doc, currentUrl) {
+      doc.querySelectorAll('a[href]').forEach(link => {
+        const href = link.getAttribute('href');
+        if (href.startsWith('#') || href.startsWith('javascript:')) return;
+        const abs = href.startsWith('http') ? href : new URL(href, currentUrl).href;
+        link.addEventListener('click', e => {
+          e.preventDefault();
+          history.replaceState(null, '', `/?url=${encodeURIComponent(abs)}`);
+          loadPage(abs);
+        });
+        link.setAttribute('href', `/?url=${encodeURIComponent(abs)}`);
+      });
+    }
+
+    async function loadPage(targetUrl) {
+      showLoader();
+      try {
+        const html = await fetchWithCache(targetUrl);
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+
+        document.title = doc.title || targetUrl;
+
         let base = doc.querySelector('base');
         if (!base) {
           base = doc.createElement('base');
           doc.head.insertBefore(base, doc.head.firstChild);
         }
-        base.setAttribute('href', url);
+        base.setAttribute('href', targetUrl);
 
-        // src/href → 絶対化
-        doc.querySelectorAll('[src],[href]').forEach(el => {
-          const attr = el.hasAttribute('src') ? 'src' : 'href';
-          const v = el.getAttribute(attr);
-          if (v && !/^(https?:|\/\/|data:)/.test(v)) {
-            el.setAttribute(attr, new URL(v, url).href);
-          }
-        });
+        doc.querySelectorAll('script').forEach(s => s.remove());
 
-        // 不要タグ除去
-        doc.querySelectorAll('meta[http-equiv],script,iframe').forEach(e=>e.remove());
+        rewriteResourceUrls(doc, targetUrl);
+        interceptLinks(doc, targetUrl);
 
-        // CSS inline
-        await Promise.all([...doc.querySelectorAll('link[rel=stylesheet]')].map(async l=>{
-          try {
-            const css = await fetch(PROXIES[0] + encodeURIComponent(l.href), {
-              credentials: 'omit',
-              referrerPolicy: 'no-referrer'
-            }).then(r=>r.text());
-            const s = document.createElement('style');
-            s.textContent = css;
-            l.replaceWith(s);
-          } catch {}
-        }));
-
-        // メディアとフォーム
-        doc.querySelectorAll('img').forEach(img=>{
+        doc.querySelectorAll('img').forEach(img => {
           img.loading = 'lazy';
           img.classList.add('thumbnail');
-          img.onclick = ()=> img.classList.toggle('thumbnail');
-        });
-        doc.querySelectorAll('video').forEach(v=>v.setAttribute('controls',''));
-        doc.querySelectorAll('form').forEach(f=>{
-          const abs = new URL(f.action||url, url).href;
-          f.method = 'GET';
-          f.action = '/';
-          const i = document.createElement('input');
-          i.type = 'hidden'; i.name = 'url'; i.value = abs;
-          f.appendChild(i);
+          img.addEventListener('click', () => {
+            img.classList.toggle('thumbnail');
+          });
         });
 
-        // セレクター抽出
-        const sel = selectorInput.value.trim();
-        const frag = sel
-          ? (doc.querySelector(sel) || document.createTextNode('該当する要素がありません')).cloneNode(true)
-          : doc.body.cloneNode(true);
-        content.appendChild(frag);
+        doc.querySelectorAll('video').forEach(v => v.setAttribute('controls', ''));
 
+        doc.querySelectorAll('form').forEach(f => {
+          const action = f.getAttribute('action') || targetUrl;
+          const abs = action.startsWith('http') ? action : new URL(action, targetUrl).href;
+          f.setAttribute('action', '/');
+          f.setAttribute('method', 'GET');
+          const inp = document.createElement('input');
+          inp.type = 'hidden'; inp.name = 'url'; inp.value = abs;
+          f.appendChild(inp);
+        });
+
+        const wrapper = document.createElement('div');
+        wrapper.append(...doc.body.childNodes);
+        const container = document.getElementById('content');
+        container.innerHTML = '';
+        container.appendChild(wrapper);
       } catch (err) {
-        showError(err.message || 'Unknown error');
-        content.textContent = 'Error: ' + err.message;
-        document.title = 'Error';
+        document.getElementById('content').textContent = '読み込みエラー: ' + err;
+        document.title = 'エラー';
       } finally {
-        bar.style.width = '0%';
+        hideLoader();
       }
     }
 
-    // HTMLダウンロード
-    function downloadHTML(){
-      const blob = new Blob([
-        '<!DOCTYPE html>\n<html>'+document.documentElement.innerHTML+'</html>'
-      ], { type: 'text/html' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'snapshot.html';
-      a.click();
+    document.getElementById('goButton').addEventListener('click', () => {
+      const url = document.getElementById('urlInput').value;
+      if (url) {
+        history.replaceState(null, '', `/?url=${encodeURIComponent(url)}`);
+        loadPage(url);
+      }
+    });
+    document.getElementById('urlInput').addEventListener('keyup', e => {
+      if (e.key === 'Enter') document.getElementById('goButton').click();
+    });
+
+    const params = new URLSearchParams(location.search);
+    if (params.has('url')) {
+      const u = params.get('url');
+      document.getElementById('urlInput').value = u;
+      loadPage(u);
     }
-
-    // イベント
-    goBtn.onclick = ()=>{
-      const u = urlInput.value.trim();
-      if (!u) return;
-      history.pushState({u}, '', `?u=${encodeURIComponent(u)}`);
-      _loadPage(u, false);
-      backBtn.disabled = !history.state;
-    };
-    backBtn.onclick = ()=> history.back();
-    fwdBtn.onclick = ()=> history.forward();
-    dlBtn.onclick = downloadHTML;
-    [urlInput, selectorInput].forEach(el=>{
-      el.addEventListener('keyup', e=>{ if (e.key==='Enter') goBtn.click(); });
-    });
-    window.addEventListener('popstate', e=>{
-      if (e.state && e.state.u) {
-        urlInput.value = e.state.u;
-        _loadPage(e.state.u, false);
-      }
-    });
-
-    // 初回読込
-    (()=>{
-      const p = new URLSearchParams(location.search);
-      if (p.has('u')) {
-        const u = p.get('u');
-        urlInput.value = u;
-        _loadPage(u, false);
-        backBtn.disabled = !history.state;
-      }
-    })();
-  })();
   </script>
 </body>
 </html>
