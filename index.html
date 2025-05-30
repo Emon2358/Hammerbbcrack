@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hammerbbcrack - Full JS Execution without srcdoc</title>
+  <title>Hammerbbcrack - Improved Proxy</title>
   <style>
     body { margin: 0; font-family: Arial, sans-serif; }
     #toolbar { padding: 1rem; background: #f0f0f0; display: flex; align-items: center; }
@@ -35,12 +35,11 @@
     <input id="urlInput" type="url" placeholder="https://example.com" required>
     <button id="goButton">Go</button>
   </div>
-  <!-- iframe の sandbox 属性でスクリプトの実行と同一オリジンを許可 -->
   <iframe id="pageFrame" sandbox="allow-same-origin allow-scripts allow-forms"></iframe>
   <div id="loader"></div>
 
   <script>
-    // AllOrigins プロキシを利用してリソースを取得
+    // プロキシとして AllOrigins を利用
     const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
     const loader = document.getElementById('loader');
     // キャッシュの有効期限（ミリ秒）
@@ -49,7 +48,7 @@
     function showLoader() { loader.style.display = 'block'; }
     function hideLoader() { loader.style.display = 'none'; }
 
-    // localStorage を利用してキャッシュする関数
+    // キャッシュを使って取得（localStorage）
     async function fetchWithCache(url) {
       const key = 'proxy_cache_' + url;
       const cached = localStorage.getItem(key);
@@ -63,12 +62,12 @@
       return html;
     }
 
-    // HTML の中身を書き換えて、リソース URL やリンクをプロキシ経由に更新
+    // HTMLの中身を書き換えて、プロキシ経由のURLに変更しつつ、baseタグを補完
     function rewriteHtml(html, baseUrl) {
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
 
-      // base タグを追加（相対パス対策）
+      // base タグの設定（相対パス対策）
       let base = doc.querySelector('base');
       if (!base) {
         base = doc.createElement('base');
@@ -76,8 +75,8 @@
       }
       base.setAttribute('href', baseUrl);
 
-      // 画像、CSS、JS、動画、iframe などのリソース URL をプロキシ経由に書き換え
-      const resourceSelectors = [
+      // すべてのリソースURL（画像、CSS、JS、動画など）をプロキシ経由に書き換え
+      const selectors = [
         { tag: 'img', attr: 'src' },
         { tag: 'link', attr: 'href' },
         { tag: 'script', attr: 'src' },
@@ -88,52 +87,49 @@
         { tag: 'embed', attr: 'src' },
         { tag: 'object', attr: 'data' }
       ];
-      resourceSelectors.forEach(({ tag, attr }) => {
+      selectors.forEach(({ tag, attr }) => {
         doc.querySelectorAll(tag).forEach(el => {
           const original = el.getAttribute(attr);
           if (original && !original.startsWith('data:')) {
             try {
               const abs = new URL(original, baseUrl).href;
               el.setAttribute(attr, CORS_PROXY + encodeURIComponent(abs));
-            } catch (err) {
+            } catch(err) {
               // URL の解析に失敗した場合は無視
             }
           }
         });
       });
 
-      // サイト内のリンクにもプロキシを適用する
+      // リンクの書き換え
       doc.querySelectorAll('a[href]').forEach(link => {
         const href = link.getAttribute('href');
-        if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+        if (href.startsWith('#') || href.startsWith('javascript:')) return;
         const abs = href.startsWith('http') ? href : new URL(href, baseUrl).href;
-        // リンククリック時に親ウィンドウの loadPage 関数を呼び出すための処理
+        // 新たに読み込むため、target="_self" に変更
+        link.setAttribute('target', '_self');
+        // クリック時に親ウィンドウの loadPage を呼び出すようイベントを設定
         link.addEventListener('click', function(e) {
           e.preventDefault();
           window.parent.loadPage(abs);
         });
+        // href を絶対パスに更新
         link.setAttribute('href', abs);
       });
-
-      // script タグはそのままにするので、サイト内の JavaScript はフルに読み込まれる
+      
       return '<!DOCTYPE html>' + doc.documentElement.outerHTML;
     }
 
-    // iframe 内に HTML 全体を直接書き込むことで、srcdoc を使わずに JS を含むすべてのコードを実行する
+    // ページを読み込み、iframe の srcdoc に設定する
     async function loadPage(targetUrl) {
       showLoader();
       try {
         const html = await fetchWithCache(targetUrl);
         const rewritten = rewriteHtml(html, targetUrl);
         const iframe = document.getElementById('pageFrame');
-        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-        iframeDoc.open();
-        iframeDoc.write(rewritten);
-        iframeDoc.close();
-        
-        // ページタイトルを書き換え
-        const parsedDoc = new DOMParser().parseFromString(rewritten, 'text/html');
-        document.title = parsedDoc.title || targetUrl;
+        iframe.srcdoc = rewritten;
+        const docTitle = new DOMParser().parseFromString(rewritten, 'text/html').title;
+        document.title = docTitle || targetUrl;
       } catch (err) {
         alert('読み込みエラー: ' + err);
       } finally {
@@ -148,20 +144,16 @@
         loadPage(url);
       }
     });
-
     document.getElementById('urlInput').addEventListener('keyup', e => {
       if (e.key === 'Enter') document.getElementById('goButton').click();
     });
-
-    // URL パラメータに url がある場合は自動で読み込み
     const params = new URLSearchParams(location.search);
     if (params.has('url')) {
       const u = params.get('url');
       document.getElementById('urlInput').value = u;
       loadPage(u);
     }
-
-    // iframe 内のリンクから親ウィンドウの loadPage 関数を呼び出せるように公開
+    // iframe 内のリンククリック時に親ウィンドウの loadPage 呼び出しができるようにする
     window.loadPage = loadPage;
   </script>
 </body>
