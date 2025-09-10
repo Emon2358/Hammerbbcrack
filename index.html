@@ -7,32 +7,75 @@
   <style>
     body { font-family: sans-serif; margin: 2rem; }
     input, button { padding: 0.5rem; font-size: 1rem; }
+    #content-container { margin-top: 2rem; border: 1px solid #ccc; }
+    iframe { width: 100%; height: 80vh; border: none; }
   </style>
 </head>
 <body>
   <h1>Hammerbbcrack</h1>
-  <p>閲覧したいサイトのドメインまたはURLを入力すると、直接AllOriginsプロキシへリダイレクトします。</p>
+  <p>閲覧したいサイトのドメインまたはURLを入力すると、このページ内にコンテンツを表示します。</p>
 
   <label>
     URL／ドメイン：
     <input type="text" id="url" style="width: 70%;" placeholder="example.com/path/page.html または https://example.com/...">
   </label>
-  <button id="go">アクセス</button>
+  <button id="go">表示</button>
+
+  <div id="content-container"></div>
 
   <script>
-    document.getElementById('go').addEventListener('click', () => {
-      let val = document.getElementById('url').value.trim();
-      if (!val) {
+    document.getElementById('go').addEventListener('click', async () => {
+      const urlInput = document.getElementById('url');
+      const contentContainer = document.getElementById('content-container');
+      let targetUrl = urlInput.value.trim();
+
+      if (!targetUrl) {
         alert('ドメインまたはURLを入力してください');
         return;
       }
+
       // スキームがなければ https:// を付与
-      if (!/^https?:\/\//i.test(val)) {
-        val = 'https://' + val;
+      if (!/^https?:\/\//i.test(targetUrl)) {
+        targetUrl = 'https://' + targetUrl;
       }
-      const proxy = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(val);
-      // プロキシURLへリダイレクト
-      window.location.href = proxy;
+      
+      // 読み込み中メッセージを表示
+      contentContainer.innerHTML = '<p style="padding: 1rem;">読み込み中...</p>';
+
+      // allorigins のJSONを返すエンドポイントを使用
+      const proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(targetUrl);
+      
+      try {
+        const response = await fetch(proxyUrl);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        const htmlContent = data.contents;
+
+        if (!htmlContent) {
+          throw new Error('コンテンツの取得に失敗しました。');
+        }
+
+        // iframeを作成してコンテンツを表示
+        contentContainer.innerHTML = ''; // コンテナをクリア
+        const iframe = document.createElement('iframe');
+        contentContainer.appendChild(iframe);
+
+        const doc = iframe.contentWindow.document;
+        doc.open();
+        doc.write(htmlContent);
+        doc.close();
+
+        // サイト内の相対パス（画像やCSSなど）を正しく読み込むために <base> タグを追加
+        const base = doc.createElement('base');
+        base.href = targetUrl;
+        doc.head.prepend(base);
+
+      } catch (error) {
+        console.error('Error fetching the URL:', error);
+        contentContainer.innerHTML = `<p style="padding: 1rem; color: red;">エラーが発生しました: ${error.message}</p>`;
+      }
     });
   </script>
 </body>
